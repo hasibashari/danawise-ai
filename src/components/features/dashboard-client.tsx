@@ -74,6 +74,12 @@ type EnrichedTransaction = Transaction & {
   budgetAccount?: { id: string; name: string; type: string } | null;
 };
 
+// Type untuk timeSeriesData yang sudah include semua relasi dari API
+type TimeSeriesTransaction = Pick<Transaction, 'id' | 'date' | 'amount' | 'type'> & {
+  category: Category | null;
+  budgetAccount: { id: string; name: string; type: string } | null;
+};
+
 interface DashboardClientProps {
   stats: {
     income: number;
@@ -82,7 +88,7 @@ interface DashboardClientProps {
   };
   recentTransactions: EnrichedTransaction[];
   categoryData: { name: string; value: number }[];
-  timeSeriesData: Pick<Transaction, 'date' | 'amount' | 'type'>[];
+  timeSeriesData: TimeSeriesTransaction[];
   budgetAccounts?: {
     id: string;
     name: string;
@@ -103,21 +109,103 @@ export const DashboardClient = ({
   const [selectedBudgetAccount, setSelectedBudgetAccount] = useState<string>('all');
   const [timeRange, setTimeRange] = useState('30d');
 
+  // Langsung gunakan data dari API, dengan fallback enrichment jika perlu
+  const timeSeriesData = useMemo(() => {
+    console.log('🔍 Client Debug - rawTimeSeriesData length:', rawTimeSeriesData.length);
+    console.log('🔍 Client Debug - recentTransactions length:', recentTransactions.length);
+
+    // Jika timeSeriesData sudah memiliki budgetAccount, gunakan langsung
+    const hasValidBudgetAccount = rawTimeSeriesData.some(
+      tx => tx.budgetAccount !== null && tx.budgetAccount !== undefined
+    );
+
+    if (hasValidBudgetAccount) {
+      console.log('🔍 Client Debug - Using original timeSeriesData (has budgetAccount)');
+      return rawTimeSeriesData;
+    }
+
+    // Jika tidak, coba enrich dari recentTransactions
+    console.log('🔍 Client Debug - Enriching timeSeriesData from recentTransactions');
+    return rawTimeSeriesData.map((tx, index) => {
+      // Coba match berdasarkan multiple criteria
+      const match = recentTransactions.find(rt => {
+        const dateMatch = new Date(rt.date).getTime() === new Date(tx.date).getTime();
+        const amountMatch = rt.amount === tx.amount;
+        const typeMatch = rt.type === tx.type;
+        return dateMatch && amountMatch && typeMatch;
+      });
+
+      if (match) {
+        console.log(`🔍 Client Debug - Match found for tx ${index}:`, match.budgetAccount?.name);
+      }
+
+      return {
+        ...tx,
+        budgetAccount: match?.budgetAccount || null,
+        category: match?.category || tx.category || null,
+      };
+    });
+  }, [rawTimeSeriesData, recentTransactions]);
+
+  // Filter semua transaksi (income/expense) untuk summary dan chart sesuai akun
+  const filteredTimeSeriesData = useMemo(() => {
+    console.log('🔍 Filter Debug - selectedBudgetAccount:', selectedBudgetAccount);
+    console.log('🔍 Filter Debug - timeSeriesData length:', timeSeriesData.length);
+
+    // Debug: Cek berapa banyak yang punya budgetAccount
+    const withBudgetAccount = timeSeriesData.filter(tx => tx.budgetAccount !== null);
+    console.log('🔍 Filter Debug - Transactions with budgetAccount:', withBudgetAccount.length);
+
+    if (selectedBudgetAccount === 'all') {
+      console.log('🔍 Filter Debug - Using all data');
+      return timeSeriesData;
+    }
+
+    const filtered = timeSeriesData.filter(tx => tx.budgetAccount?.id === selectedBudgetAccount);
+    console.log('🔍 Filter Debug - Filtered data length:', filtered.length);
+    console.log('🔍 Filter Debug - Looking for budgetAccount.id:', selectedBudgetAccount);
+
+    // Debug: Show what budgetAccount IDs we actually have
+    const availableIds = timeSeriesData
+      .filter(tx => tx.budgetAccount)
+      .map(tx => tx.budgetAccount?.id)
+      .filter((id, index, array) => array.indexOf(id) === index);
+    console.log('🔍 Filter Debug - Available budgetAccount IDs:', availableIds);
+
+    return filtered;
+  }, [timeSeriesData, selectedBudgetAccount]); // Hitung total income, expense, balance sesuai filter akun
+  const filteredStats = useMemo(() => {
+    let income = 0;
+    let expense = 0;
+    filteredTimeSeriesData.forEach(tx => {
+      if (tx.type === 'INCOME') income += tx.amount;
+      if (tx.type === 'EXPENSE') expense += tx.amount;
+    });
+    return {
+      income,
+      expense,
+      balance: income - expense,
+    };
+  }, [filteredTimeSeriesData]);
+
   // Memoize chart data untuk mencegah re-render - data terpisah untuk setiap batang
-  const chartData = useMemo(
-    () => [
-      { name: 'Income', value: stats.income, type: 'income' },
-      { name: 'Expense', value: stats.expense, type: 'expense' },
-    ],
-    [stats.income, stats.expense]
-  );
+  const chartData = useMemo(() => {
+    const income = filteredStats.income || 0;
+    const expense = filteredStats.expense || 0;
+
+    console.log('🔍 BarChart Debug - Income:', income, 'Expense:', expense);
+
+    return [
+      { name: 'Income', value: income, type: 'income' },
+      { name: 'Expense', value: expense, type: 'expense' },
+    ];
+  }, [filteredStats.income, filteredStats.expense]);
 
   // Aggregated data untuk Area Chart - group by date dan sum income/expense
   const filteredData = useMemo(() => {
     const referenceDate = new Date();
     let daysToSubtract = 30;
 
-    // Parse time range dengan format baru
     switch (timeRange) {
       case '7d':
         daysToSubtract = 7;
@@ -139,7 +227,20 @@ export const DashboardClient = ({
     startDate.setDate(startDate.getDate() - daysToSubtract);
 
     // Filter data berdasarkan range waktu
-    const filtered = rawTimeSeriesData.filter(item => new Date(item.date) >= startDate);
+    const filtered = filteredTimeSeriesData.filter(item => new Date(item.date) >= startDate);
+
+    console.log('🔍 AreaChart Debug - selectedBudgetAccount:', selectedBudgetAccount);
+    console.log(
+      '🔍 AreaChart Debug - filteredTimeSeriesData total:',
+      filteredTimeSeriesData.length
+    );
+    console.log('🔍 AreaChart Debug - Filtered transactions in time range:', filtered.length);
+
+    // Jika tidak ada data dalam range waktu, return empty array (biarkan kondisi display yang handle)
+    if (filtered.length === 0) {
+      console.log('🔍 AreaChart Debug - No data in time range');
+      return [];
+    }
 
     // Group data by date dan aggregate income/expense
     const groupedData = filtered.reduce((acc, transaction) => {
@@ -162,15 +263,68 @@ export const DashboardClient = ({
       return acc;
     }, {} as Record<string, { date: string; income: number; expense: number }>);
 
-    // Convert ke array dan sort by date
-    return Object.values(groupedData).sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-  }, [rawTimeSeriesData, timeRange]);
+    // Convert ke array dan sort by date, pastikan tipe array dikenali TypeScript
+    const result = (
+      Object.values(groupedData) as Array<{ date: string; income: number; expense: number }>
+    ).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    console.log('🔍 AreaChart Debug - Final data points:', result.length);
+    console.log('🔍 AreaChart Debug - Sample data:', result.slice(0, 2));
+
+    // Jika hanya ada 1 data point, tambahkan point kosong untuk visual yang lebih baik
+    if (result.length === 1) {
+      const onlyDate = new Date(result[0].date);
+      const prevDate = new Date(onlyDate);
+      prevDate.setDate(prevDate.getDate() - 1);
+      const nextDate = new Date(onlyDate);
+      nextDate.setDate(nextDate.getDate() + 1);
+
+      return [
+        { date: format(prevDate, 'yyyy-MM-dd'), income: 0, expense: 0 },
+        ...result,
+        { date: format(nextDate, 'yyyy-MM-dd'), income: 0, expense: 0 },
+      ];
+    }
+
+    return result;
+  }, [filteredTimeSeriesData, timeRange]);
+
+  // Filter transaksi EXPENSE untuk kategori (PieChart) sesuai akun - termasuk yang tidak punya kategori
+  const filteredCategoryData = useMemo(() => {
+    // Ambil semua transaksi expense yang sudah di-filter berdasarkan akun
+    const expenseTx = filteredTimeSeriesData.filter(tx => tx.type === 'EXPENSE');
+
+    console.log('🔍 PieChart Debug - expenseTx count:', expenseTx.length);
+
+    // Jika tidak ada expense transaction, return array kosong
+    if (expenseTx.length === 0) {
+      return [];
+    }
+
+    const map = new Map<string, number>();
+    expenseTx.forEach(tx => {
+      const name = tx.category?.name || 'Uncategorized';
+      map.set(name, (map.get(name) || 0) + tx.amount);
+    });
+
+    const result = Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+
+    console.log('🔍 PieChart Debug - Category data result:', result.length, 'categories');
+    return result;
+  }, [filteredTimeSeriesData]);
 
   const [insight, setInsight] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [hoveredArea, setHoveredArea] = useState<string | null>(null);
+
+  // Filter transaksi terbaru berdasarkan akun budget
+  const filteredTransactions = useMemo(() => {
+    if (selectedBudgetAccount === 'all') return recentTransactions;
+    return recentTransactions.filter(tx => tx.budgetAccount?.id === selectedBudgetAccount);
+  }, [recentTransactions, selectedBudgetAccount]);
 
   // Use useCallback untuk memoize function
   const handleGetInsight = useCallback(async () => {
@@ -232,7 +386,9 @@ export const DashboardClient = ({
             <CardTitle className='text-sm font-medium'>Total Income</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className='text-2xl font-bold text-green-600'>{formatCurrency(stats.income)}</div>
+            <div className='text-2xl font-bold text-green-600'>
+              {formatCurrency(filteredStats.income)}
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -240,7 +396,9 @@ export const DashboardClient = ({
             <CardTitle className='text-sm font-medium'>Total Expense</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className='text-2xl font-bold text-red-600'>{formatCurrency(stats.expense)}</div>
+            <div className='text-2xl font-bold text-red-600'>
+              {formatCurrency(filteredStats.expense)}
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -248,7 +406,7 @@ export const DashboardClient = ({
             <CardTitle className='text-sm font-medium'>Current Balance</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className='text-2xl font-bold'>{formatCurrency(stats.balance)}</div>
+            <div className='text-2xl font-bold'>{formatCurrency(filteredStats.balance)}</div>
           </CardContent>
         </Card>
       </div>
@@ -301,7 +459,7 @@ export const DashboardClient = ({
           <CardContent className='px-2 pt-4 sm:px-6 sm:pt-6'>
             {filteredData.length === 0 ? (
               <div className='flex items-center justify-center h-[250px] text-muted-foreground'>
-                No data available for selected time range
+                No transaction data available for selected account and time range
               </div>
             ) : (
               <ChartContainer
@@ -344,27 +502,33 @@ export const DashboardClient = ({
                         return date.toLocaleDateString('id-ID', { month: 'short', day: 'numeric' });
                       }}
                     />
-                    <YAxis tickFormatter={value => `Rp${Number(value) / 1000}k`} />
+                    <YAxis
+                      tickFormatter={value => {
+                        const num = Number(value);
+                        if (num >= 1000000) return `Rp${(num / 1000000).toFixed(0)}M`;
+                        if (num >= 1000) return `Rp${(num / 1000).toFixed(0)}k`;
+                        return `Rp${num}`;
+                      }}
+                      domain={[0, 'dataMax']}
+                      allowDataOverflow={false}
+                      tickLine={false}
+                      axisLine={false}
+                    />
                     <ChartTooltip
                       cursor={{ stroke: '#ccc', strokeDasharray: '5 5' }}
                       content={({ active, payload, label }) => {
-                        if (active && payload && payload.length && hoveredArea) {
-                          // Filter payload berdasarkan area yang di-hover
-                          const filteredPayload = payload.filter(
-                            entry => entry.dataKey === hoveredArea
-                          );
-                          if (filteredPayload.length > 0) {
-                            const entry = filteredPayload[0];
-                            return (
-                              <div className='bg-white p-3 border rounded shadow-lg'>
-                                <p className='font-medium mb-2'>
-                                  {new Date(label).toLocaleDateString('id-ID', {
-                                    month: 'short',
-                                    day: 'numeric',
-                                    year: 'numeric',
-                                  })}
-                                </p>
-                                <div className='flex items-center gap-2'>
+                        if (active && payload && payload.length) {
+                          return (
+                            <div className='bg-white p-3 border rounded shadow-lg'>
+                              <p className='font-medium mb-2'>
+                                {new Date(label).toLocaleDateString('id-ID', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                })}
+                              </p>
+                              {payload.map((entry, index) => (
+                                <div key={index} className='flex items-center gap-2 mb-1'>
                                   <div
                                     className='w-3 h-3 rounded-full'
                                     style={{ backgroundColor: entry.color }}
@@ -374,9 +538,9 @@ export const DashboardClient = ({
                                     {formatCurrency(Number(entry.value))}
                                   </span>
                                 </div>
-                              </div>
-                            );
-                          }
+                              ))}
+                            </div>
+                          );
                         }
                         return null;
                       }}
@@ -388,6 +552,8 @@ export const DashboardClient = ({
                       stroke='#22c55e'
                       strokeWidth={2}
                       name='Income'
+                      connectNulls={true}
+                      dot={{ r: 3, fill: '#22c55e' }}
                       activeDot={{ r: 6, stroke: '#22c55e', strokeWidth: 2, fill: '#fff' }}
                       onMouseEnter={() => setHoveredArea('income')}
                       onMouseLeave={() => setHoveredArea(null)}
@@ -399,6 +565,8 @@ export const DashboardClient = ({
                       stroke='#ef4444'
                       strokeWidth={2}
                       name='Expense'
+                      connectNulls={true}
+                      dot={{ r: 3, fill: '#ef4444' }}
                       activeDot={{ r: 6, stroke: '#ef4444', strokeWidth: 2, fill: '#fff' }}
                       onMouseEnter={() => setHoveredArea('expense')}
                       onMouseLeave={() => setHoveredArea(null)}
@@ -416,15 +584,15 @@ export const DashboardClient = ({
           <CardHeader>
             <CardTitle>Top 5 Expense Categories</CardTitle>
             <CardDescription>
-              {categoryData.length === 0
+              {filteredCategoryData.length === 0
                 ? 'No expense data available'
                 : `Total: ${formatCurrency(
-                    categoryData.reduce((sum, item) => sum + item.value, 0)
+                    filteredCategoryData.reduce((sum, item) => sum + item.value, 0)
                   )}`}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {categoryData.length === 0 ? (
+            {filteredCategoryData.length === 0 ? (
               <div className='flex items-center justify-center h-[300px] text-muted-foreground'>
                 No expense categories to display
               </div>
@@ -437,7 +605,7 @@ export const DashboardClient = ({
                   />
                   <Legend verticalAlign='bottom' height={36} formatter={value => value} />
                   <Pie
-                    data={categoryData}
+                    data={filteredCategoryData}
                     dataKey='value'
                     nameKey='name'
                     cx='50%'
@@ -447,7 +615,7 @@ export const DashboardClient = ({
                     paddingAngle={2}
                     strokeWidth={2}
                   >
-                    {categoryData.map((entry, index) => (
+                    {filteredCategoryData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
@@ -468,15 +636,22 @@ export const DashboardClient = ({
           <CardContent>
             <ChartContainer config={barChartConfig}>
               <BarChart accessibilityLayer data={chartData}>
-                <CartesianGrid vertical={false} />
+                <CartesianGrid vertical={false} strokeDasharray='3 3' />
                 <XAxis dataKey='name' tickLine={false} tickMargin={10} axisLine={false} />
                 <YAxis
-                  tickFormatter={value => `Rp${Number(value) / 1000}k`}
+                  tickFormatter={value => {
+                    const num = Number(value);
+                    if (num >= 1000000) return `Rp${(num / 1000000).toFixed(0)}M`;
+                    if (num >= 1000) return `Rp${(num / 1000).toFixed(0)}k`;
+                    return `Rp${num}`;
+                  }}
                   tickLine={false}
                   axisLine={false}
+                  domain={[0, 'dataMax']}
+                  allowDataOverflow={false}
                 />
                 <ChartTooltip
-                  cursor={false}
+                  cursor={{ fill: 'rgba(0, 0, 0, 0.1)' }}
                   content={({ active, payload }) => {
                     if (active && payload && payload.length > 0) {
                       const entry = payload[0];
@@ -493,7 +668,7 @@ export const DashboardClient = ({
                             />
                             <span className='text-sm'>
                               {entry.payload?.type === 'income' ? 'Total Income' : 'Total Expense'}:{' '}
-                              {formatCurrency(Number(entry.value))}
+                              {formatCurrency(Number(entry.value || 0))}
                             </span>
                           </div>
                         </div>
@@ -502,7 +677,7 @@ export const DashboardClient = ({
                     return null;
                   }}
                 />
-                <Bar dataKey='value' radius={4}>
+                <Bar dataKey='value' radius={4} minPointSize={2}>
                   {chartData.map((entry, index) => (
                     <Cell
                       key={`cell-${index}`}
@@ -578,7 +753,7 @@ export const DashboardClient = ({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recentTransactions.map(tx => (
+                {filteredTransactions.map(tx => (
                   <TableRow key={tx.id}>
                     <TableCell>
                       <div className='font-medium'>{tx.description}</div>

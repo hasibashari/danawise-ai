@@ -29,9 +29,9 @@ const DashboardPage = async () => {
       where: { userId },
       orderBy: { date: 'desc' },
       take: 5,
-      include: { 
+      include: {
         category: true,
-        budgetAccount: true 
+        budgetAccount: true,
       },
     }),
     db.budgetAccount.findMany({

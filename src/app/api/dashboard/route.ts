@@ -64,14 +64,34 @@ export async function GET(_request: NextRequest) {
       }))
       .slice(0, 5); // Ambil top 5
 
-    // Ambil time series data untuk 30 hari terakhir
+    // Ambil semua transaksi untuk 30 hari terakhir, sertakan relasi akun dan kategori
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const timeSeriesData = await db.transaction.findMany({
       where: { userId, date: { gte: thirtyDaysAgo } },
-      select: { date: true, amount: true, type: true },
       orderBy: { date: 'asc' },
+      include: {
+        budgetAccount: {
+          select: {
+            id: true,
+            name: true,
+            type: true
+          }
+        },
+        category: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+      },
     });
+
+    // Debug: Log data structure untuk memastikan include bekerja
+    console.log('🔍 API Debug - timeSeriesData sample:', timeSeriesData.slice(0, 2));
+    if (timeSeriesData.length > 0) {
+      console.log('🔍 API Debug - First transaction:', JSON.stringify(timeSeriesData[0], null, 2));
+    }
 
     const stats = {
       income: totalIncome._sum.amount ?? 0,
