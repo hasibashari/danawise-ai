@@ -75,19 +75,23 @@ type EnrichedTransaction = Transaction & {
 };
 
 // Type untuk timeSeriesData yang sudah include semua relasi dari API
-type TimeSeriesTransaction = Pick<Transaction, 'id' | 'date' | 'amount' | 'type'> & {
-  category: Category | null;
-  budgetAccount: { id: string; name: string; type: string } | null;
+type TimeSeriesTransaction = {
+  id?: string;
+  date: Date;
+  amount: number;
+  type: 'INCOME' | 'EXPENSE';
+  category?: Category | null;
+  budgetAccount?: { id: string; name: string; type: string } | null;
 };
 
 interface DashboardClientProps {
-  stats: {
+  stats?: {
     income: number;
     expense: number;
     balance: number;
   };
   recentTransactions: EnrichedTransaction[];
-  categoryData: { name: string; value: number }[];
+  categoryData?: { name: string; value: number }[];
   timeSeriesData: TimeSeriesTransaction[];
   budgetAccounts?: {
     id: string;
@@ -99,7 +103,7 @@ interface DashboardClientProps {
 }
 
 export const DashboardClient = ({
-  stats,
+  stats: _stats,
   recentTransactions,
   categoryData,
   timeSeriesData: rawTimeSeriesData,
@@ -135,13 +139,13 @@ export const DashboardClient = ({
         return dateMatch && amountMatch && typeMatch;
       });
 
-      if (match) {
-        console.log(`🔍 Client Debug - Match found for tx ${index}:`, match.budgetAccount?.name);
+      if (match?.budgetAccount) {
+        console.log(`🔍 Client Debug - Match found for tx ${index}:`, match.budgetAccount.name);
       }
 
       return {
         ...tx,
-        budgetAccount: match?.budgetAccount || null,
+        budgetAccount: match?.budgetAccount || tx.budgetAccount || null,
         category: match?.category || tx.category || null,
       };
     });
@@ -149,31 +153,23 @@ export const DashboardClient = ({
 
   // Filter semua transaksi (income/expense) untuk summary dan chart sesuai akun
   const filteredTimeSeriesData = useMemo(() => {
-    console.log('🔍 Filter Debug - selectedBudgetAccount:', selectedBudgetAccount);
-    console.log('🔍 Filter Debug - timeSeriesData length:', timeSeriesData.length);
-
-    // Debug: Cek berapa banyak yang punya budgetAccount
-    const withBudgetAccount = timeSeriesData.filter(tx => tx.budgetAccount !== null);
-    console.log('🔍 Filter Debug - Transactions with budgetAccount:', withBudgetAccount.length);
-
     if (selectedBudgetAccount === 'all') {
-      console.log('🔍 Filter Debug - Using all data');
       return timeSeriesData;
     }
 
     const filtered = timeSeriesData.filter(tx => tx.budgetAccount?.id === selectedBudgetAccount);
-    console.log('🔍 Filter Debug - Filtered data length:', filtered.length);
-    console.log('🔍 Filter Debug - Looking for budgetAccount.id:', selectedBudgetAccount);
-
-    // Debug: Show what budgetAccount IDs we actually have
-    const availableIds = timeSeriesData
-      .filter(tx => tx.budgetAccount)
-      .map(tx => tx.budgetAccount?.id)
-      .filter((id, index, array) => array.indexOf(id) === index);
-    console.log('🔍 Filter Debug - Available budgetAccount IDs:', availableIds);
+    console.log(
+      '🔍 Filter Debug - Filtered for account:',
+      selectedBudgetAccount,
+      'Found:',
+      filtered.length,
+      'transactions'
+    );
 
     return filtered;
-  }, [timeSeriesData, selectedBudgetAccount]); // Hitung total income, expense, balance sesuai filter akun
+  }, [timeSeriesData, selectedBudgetAccount]);
+
+  // Hitung total income, expense, balance sesuai filter akun
   const filteredStats = useMemo(() => {
     let income = 0;
     let expense = 0;
@@ -192,8 +188,6 @@ export const DashboardClient = ({
   const chartData = useMemo(() => {
     const income = filteredStats.income || 0;
     const expense = filteredStats.expense || 0;
-
-    console.log('🔍 BarChart Debug - Income:', income, 'Expense:', expense);
 
     return [
       { name: 'Income', value: income, type: 'income' },
@@ -229,16 +223,9 @@ export const DashboardClient = ({
     // Filter data berdasarkan range waktu
     const filtered = filteredTimeSeriesData.filter(item => new Date(item.date) >= startDate);
 
-    console.log('🔍 AreaChart Debug - selectedBudgetAccount:', selectedBudgetAccount);
-    console.log(
-      '🔍 AreaChart Debug - filteredTimeSeriesData total:',
-      filteredTimeSeriesData.length
-    );
-    console.log('🔍 AreaChart Debug - Filtered transactions in time range:', filtered.length);
-
-    // Jika tidak ada data dalam range waktu, return empty array (biarkan kondisi display yang handle)
+    // Jika tidak ada data dalam range waktu, return empty array
     if (filtered.length === 0) {
-      console.log('🔍 AreaChart Debug - No data in time range');
+      console.log('🔍 AreaChart Debug - No data in time range for', timeRange);
       return [];
     }
 
@@ -268,8 +255,7 @@ export const DashboardClient = ({
       Object.values(groupedData) as Array<{ date: string; income: number; expense: number }>
     ).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    console.log('🔍 AreaChart Debug - Final data points:', result.length);
-    console.log('🔍 AreaChart Debug - Sample data:', result.slice(0, 2));
+    console.log('🔍 AreaChart Debug - Generated', result.length, 'data points for', timeRange);
 
     // Jika hanya ada 1 data point, tambahkan point kosong untuk visual yang lebih baik
     if (result.length === 1) {
@@ -287,14 +273,17 @@ export const DashboardClient = ({
     }
 
     return result;
-  }, [filteredTimeSeriesData, timeRange]);
+  }, [filteredTimeSeriesData, timeRange, selectedBudgetAccount]);
 
   // Filter transaksi EXPENSE untuk kategori (PieChart) sesuai akun - termasuk yang tidak punya kategori
   const filteredCategoryData = useMemo(() => {
-    // Ambil semua transaksi expense yang sudah di-filter berdasarkan akun
-    const expenseTx = filteredTimeSeriesData.filter(tx => tx.type === 'EXPENSE');
+    // Jika categoryData sudah ada dari props dan selectedBudgetAccount = 'all', gunakan langsung
+    if (categoryData && selectedBudgetAccount === 'all') {
+      return categoryData;
+    }
 
-    console.log('🔍 PieChart Debug - expenseTx count:', expenseTx.length);
+    // Jika tidak, hitung dari filteredTimeSeriesData
+    const expenseTx = filteredTimeSeriesData.filter(tx => tx.type === 'EXPENSE');
 
     // Jika tidak ada expense transaction, return array kosong
     if (expenseTx.length === 0) {
@@ -312,13 +301,13 @@ export const DashboardClient = ({
       .sort((a, b) => b.value - a.value)
       .slice(0, 5);
 
-    console.log('🔍 PieChart Debug - Category data result:', result.length, 'categories');
+    console.log('🔍 PieChart Debug - Generated', result.length, 'categories');
     return result;
-  }, [filteredTimeSeriesData]);
+  }, [filteredTimeSeriesData, categoryData, selectedBudgetAccount]);
 
   const [insight, setInsight] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [hoveredArea, setHoveredArea] = useState<string | null>(null);
+  // Removed unused variable 'hoveredArea' to fix ESLint error
 
   // Filter transaksi terbaru berdasarkan akun budget
   const filteredTransactions = useMemo(() => {
@@ -555,8 +544,7 @@ export const DashboardClient = ({
                       connectNulls={true}
                       dot={{ r: 3, fill: '#22c55e' }}
                       activeDot={{ r: 6, stroke: '#22c55e', strokeWidth: 2, fill: '#fff' }}
-                      onMouseEnter={() => setHoveredArea('income')}
-                      onMouseLeave={() => setHoveredArea(null)}
+                      // Removed hoveredArea event handlers
                     />
                     <Area
                       dataKey='expense'
@@ -568,8 +556,7 @@ export const DashboardClient = ({
                       connectNulls={true}
                       dot={{ r: 3, fill: '#ef4444' }}
                       activeDot={{ r: 6, stroke: '#ef4444', strokeWidth: 2, fill: '#fff' }}
-                      onMouseEnter={() => setHoveredArea('expense')}
-                      onMouseLeave={() => setHoveredArea(null)}
+                      // Removed hoveredArea event handlers
                     />
                     <ChartLegend content={<ChartLegendContent />} />
                   </AreaChart>

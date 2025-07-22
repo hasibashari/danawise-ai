@@ -7,9 +7,13 @@ import { getServerSession } from 'next-auth';
 const CategoriesPage = async () => {
   const session = await getServerSession(authOptions);
 
+  if (!session?.user?.id) {
+    throw new Error('User not authenticated');
+  }
+
   // Ambil data di server
   const categories = await db.category.findMany({
-    where: { userId: session!.user.id },
+    where: { userId: session.user.id },
     orderBy: { createdAt: 'desc' },
   });
 

@@ -10,7 +10,7 @@ import { redirect } from 'next/navigation';
 const DashboardPage = async () => {
   const session = await getServerSession(authOptions);
   // Jika session null, redirect ke sign-in agar user tidak bisa akses dashboard tanpa login
-  if (!session) {
+  if (!session?.user?.id) {
     redirect('/sign-in');
   }
   const userId = session.user.id;
